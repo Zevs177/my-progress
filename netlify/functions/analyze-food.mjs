@@ -1,15 +1,40 @@
+
+const PRIMARY_MODEL = 'gemini-3.8-flash';
+const FALLBACK_MODEL = 'gemini-3.5-flash-lite';
+
 export default async (request) => {
-  if (request.method !== 'POST') return json({ error: 'Разрешён только POST-запрос.' }, 405);
+  if (request.method !== 'POST') {
+    return json({ error: 'Разрешён только POST-запрос.' }, 405);
+  }
+
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return json({ error: 'На Netlify ещё не настроен GEMINI_API_KEY.' }, 503);
+
+  if (!apiKey) {
+    return json({ error: 'На Netlify ещё не настроен GEMINI_API_KEY.' }, 503);
+  }
 
   let body;
-  try { body = await request.json(); } catch { return json({ error: 'Некорректный запрос.' }, 400); }
+
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'Некорректный запрос.' }, 400);
+  }
+
   const { mimeType, data } = body || {};
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType) || typeof data !== 'string') {
+
+  if (
+    !['image/jpeg', 'image/png', 'image/webp'].includes(mimeType) ||
+    typeof data !== 'string'
+  ) {
     return json({ error: 'Поддерживаются JPEG, PNG и WebP.' }, 400);
   }
-  if (data.length > 7_000_000) return json({ error: 'Фото слишком большое. Попробуй снимок меньшего размера.' }, 413);
+
+  if (data.length > 7_000_000) {
+    return json({
+      error: 'Фото слишком большое. Попробуй снимок меньшего размера.'
+    }, 413);
+  }
 
   const prompt = `Ты помощник для дневника питания. Проанализируй фотографию еды и верни ТОЛЬКО JSON.
 Оцени видимые продукты, примерную общую съедобную массу порции и КБЖУ ВСЕЙ порции (не на 100 г).
@@ -18,33 +43,157 @@ export default async (request) => {
 {"name":"короткое название блюда","portion_grams":300,"kcal":600,"protein":30,"fat":25,"carbs":55,"confidence":"низкая|средняя|высокая","ingredients":[{"name":"продукт","grams":150}],"notes":"короткое пояснение или что уточнить"}
 Все числа должны быть неотрицательными. Не добавляй Markdown.`;
 
-  try {
-    const upstream = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify({
-        contents: [{ parts: [{ inline_data: { mime_type: mimeType, data } }, { text: prompt }] }],
-        generationConfig: { responseMimeType: 'application/json', temperature: 0.2, maxOutputTokens: 700 }
-      })
-    });
-    const payload = await upstream.json().catch(() => ({}));
-    if (!upstream.ok) {
-      const message = payload?.error?.message || 'Ошибка сервиса распознавания.';
-      return json({ error: message }, upstream.status === 429 ? 429 : 502);
+  const requestModel = async (model, attempts = 3) => {
+    let lastError = 'Сервис временно недоступен.';
+    let lastStatus = 503;
+
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKey
+            },
+            body: JSON.stringify({
+              contents: [{
+                parts: [
+                  {
+                    inline_data: {
+                      mime_type: mimeType,
+                      data
+                    }
+                  },
+                  { text: prompt }
+                ]
+              }],
+              generationConfig: {
+                responseMimeType: 'application/json',
+                temperature: 0.2,
+                maxOutputTokens: 700
+              }
+            })
+          }
+        );
+
+        const payload = await response.json().catch(() => ({}));
+
+        if (response.ok) {
+          return {
+            ok: true,
+            payload
+          };
+        }
+
+        lastStatus = response.status;
+        lastError = payload?.error?.message ||
+          'Ошибка сервиса распознавания.';
+
+        const temporaryError = [
+          429, 500, 502, 503, 504
+        ].includes(response.status);
+
+        if (!temporaryError) {
+          return {
+            ok: false,
+            status: lastStatus,
+            error: lastError,
+            temporary: false
+          };
+        }
+      } catch {
+        lastStatus = 503;
+        lastError = 'Не удалось связаться с Google Gemini.';
+
+      }
+
+      if (attempt < attempts - 1) {
+        await new Promise(resolve =>
+          setTimeout(resolve, 1500 * (attempt + 1))
+        );
+      }
     }
-    const text = payload?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('').trim();
-    if (!text) return json({ error: 'ИИ не вернул результат. Попробуй другое фото.' }, 502);
+
+    return {
+      ok: false,
+      status: lastStatus,
+      error: lastError,
+      temporary: true
+    };
+  };
+
+  try {
+    // Сначала пробуем основную модель.
+    let result = await requestModel(PRIMARY_MODEL, 3);
+
+    // Если она перегружена, пробуем запасную.
+    if (!result.ok && result.temporary) {
+      result = await requestModel(FALLBACK_MODEL, 2);
+    }
+
+    if (!result.ok) {
+      const status = result.status === 429 ? 429 : 503;
+
+      return json({
+        error: 'Не удалось распознать фото. Сервис Gemini временно недоступен. Попробуй немного позже. Подробности: ' + result.error
+      }, status);
+    }
+
+    const text = result.payload
+      ?.candidates?.[0]?.content?.parts
+      ?.map(part => part.text || '')
+      .join('')
+      .trim();
+
+    if (!text) {
+      return json({
+        error: 'ИИ не вернул результат. Попробуй другое фото.'
+      }, 502);
+    }
+
     let food;
-    try { food = JSON.parse(text); } catch { return json({ error: 'Не удалось разобрать ответ ИИ. Попробуй ещё раз.' }, 502); }
-    const numeric = ['portion_grams', 'kcal', 'protein', 'fat', 'carbs'];
-    for (const key of numeric) food[key] = Math.max(0, Number(food[key]) || 0);
-    if (!food.name) food.name = 'Блюдо по фото';
+
+    try {
+      food = JSON.parse(text);
+    } catch {
+      return json({
+        error: 'Не удалось разобрать ответ ИИ. Попробуй ещё раз.'
+      }, 502);
+    }
+
+    const numeric = [
+      'portion_grams',
+      'kcal',
+      'protein',
+      'fat',
+      'carbs'
+    ];
+
+    for (const key of numeric) {
+      food[key] = Math.max(0, Number(food[key]) || 0);
+    }
+
+    if (!food.name) {
+      food.name = 'Блюдо по фото';
+    }
+
     return json({ food });
+
   } catch {
-    return json({ error: 'Не удалось связаться с сервисом распознавания. Проверь интернет и попробуй снова.' }, 502);
+    return json({
+      error: 'Не удалось связаться с сервисом распознавания. Проверь интернет и попробуй снова.'
+    }, 502);
   }
 };
 
 function json(value, status = 200) {
-  return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store'
+    }
+  });
 }
