@@ -83,7 +83,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{text-align:left;p
 <div><label>Жиры, г</label><input id="mealF" type="number" min="0" step=".1" placeholder="Необязательно"></div>
 <div><label>Углеводы, г</label><input id="mealC" type="number" min="0" step=".1" placeholder="Необязательно"></div>
 </div>
-<div><label>Фото блюда</label><input id="mealPhoto" type="file" accept="image/*" capture="environment"><div id="mealPhotoPreview" class="tiny" style="margin-top:7px">Выбери фото блюда или сделай снимок камерой.</div></div>
+<div><label>Фото блюда</label><input id="mealPhoto" type="file" accept="image/*"><div id="mealPhotoPreview" class="tiny" style="margin-top:7px">Выбери фото блюда или сделай снимок камерой.</div></div>
 <button class="btn secondary" id="recognizeFoodBtn" type="button" onclick="recognizeFood()">✦ Распознать еду по фото</button>
 <div id="foodAiStatus" class="note" aria-live="polite">ИИ предложит состав блюда и примерный КБЖУ. Проверь результат и порцию перед добавлением.</div>
 <button class="btn" onclick="addMeal()">Добавить в дневник</button>
