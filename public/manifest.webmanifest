@@ -1,0 +1,9 @@
+{
+  "name": "MY PROGRESS",
+  "short_name": "MY PROGRESS",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0d110f",
+  "theme_color": "#111513",
+  "lang": "ru"
+}
